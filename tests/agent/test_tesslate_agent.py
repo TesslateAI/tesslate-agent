@@ -248,6 +248,70 @@ async def test_max_iterations_cap() -> None:
 
 
 @pytest.mark.asyncio
+async def test_max_iterations_zero_disables_cap() -> None:
+    """max_iterations=0 means no cap; loop only stops when the model
+    emits a turn with no tool calls."""
+    registry = ToolRegistry()
+    registry.register(_make_read_file_tool())
+
+    tool_call = {
+        "id": "loop",
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "arguments": '{"file_path": "loop.txt"}',
+        },
+    }
+
+    class CountingAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(responses=[])
+            self.turn = 0
+
+        async def chat_with_tools(  # type: ignore[override]
+            self,
+            messages: list[dict[str, Any]],
+            tools: list[dict[str, Any]] | None = None,
+            tool_choice: str | dict[str, Any] = "auto",
+            temperature: float | None = None,
+            max_tokens: int | None = None,
+            stream: bool = False,
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            self.calls.append({"messages": list(messages)})
+            self.turn += 1
+            # Default cap is 30; iterate well past it before terminating
+            # to prove no cap is in force.
+            if self.turn >= 50:
+                return {
+                    "content": "done",
+                    "tool_calls": [],
+                    "usage": {},
+                    "finish_reason": "stop",
+                }
+            return {
+                "content": "",
+                "tool_calls": [tool_call],
+                "usage": {},
+                "finish_reason": "tool_calls",
+            }
+
+    agent = TesslateAgent(
+        system_prompt="test",
+        tools=registry,
+        model=CountingAdapter(),
+        max_iterations=0,
+    )
+    assert agent.max_iterations == 0
+
+    events = await _collect_events(agent, "loop please")
+    complete = next(e for e in events if e.get("type") == "complete")
+    assert complete["data"]["success"] is True
+    assert complete["data"]["iterations"] == 50
+    assert complete["data"]["completion_reason"] == "stop"
+
+
+@pytest.mark.asyncio
 async def test_missing_model_adapter_yields_error() -> None:
     agent = TesslateAgent(system_prompt="test", tools=ToolRegistry(), model=None)
     events = await _collect_events(agent, "hi")

@@ -69,7 +69,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-iterations",
         type=int,
         default=30,
-        help="Maximum number of agent iterations (default: 30).",
+        help=(
+            "Maximum number of agent iterations (default: 30). "
+            "Pass 0 (or any non-positive value) to disable the cap and "
+            "let the agent run until it terminates on its own or the "
+            "host kills it."
+        ),
     )
     run_parser.add_argument(
         "--effort",

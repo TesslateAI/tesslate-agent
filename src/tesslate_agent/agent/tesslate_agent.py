@@ -287,16 +287,20 @@ class TesslateAgent(AbstractAgent):
     ):
         super().__init__(system_prompt, tools)
         self.model = model
-        self.max_iterations = max(1, int(max_iterations))
+        # max_iterations <= 0 means "no cap" — the loop runs until the
+        # model emits a turn with no tool calls, the orchestrator times
+        # out, or an exception terminates the run.
+        max_iter_int = int(max_iterations)
+        self.max_iterations = max_iter_int if max_iter_int > 0 else 0
         self.compaction_adapter = compaction_adapter
         self.context_window_tokens = max(1000, int(context_window_tokens))
         self.compaction_threshold = max(0.1, min(0.99, float(compaction_threshold)))
 
         logger.info(
-            "TesslateAgent initialised - tools=%d, max_iterations=%d, "
+            "TesslateAgent initialised - tools=%d, max_iterations=%s, "
             "context_window=%d, compaction=%s",
             len(self.tools._tools) if self.tools else 0,
-            self.max_iterations,
+            self.max_iterations if self.max_iterations > 0 else "unlimited",
             self.context_window_tokens,
             "on" if self.compaction_adapter is not None else "off",
         )
@@ -345,7 +349,7 @@ class TesslateAgent(AbstractAgent):
             iteration += 1
             logger.info("[TesslateAgent] iteration %d", iteration)
 
-            if iteration > self.max_iterations:
+            if self.max_iterations > 0 and iteration > self.max_iterations:
                 logger.warning(
                     "[TesslateAgent] max_iterations=%d reached",
                     self.max_iterations,

@@ -58,7 +58,9 @@ async def run_agent(
         model: LiteLLM-style model identifier (e.g. ``"openai/gpt-4o-mini"``).
         workdir: Directory the agent should treat as ``PROJECT_ROOT``.
         output: Path to write the ATIF v1.4 trajectory JSON to.
-        max_iterations: Hard cap on the agent loop.
+        max_iterations: Hard cap on the agent loop. Pass 0 to disable
+            the cap and let the agent run until it terminates on its
+            own.
         effort: Extended-thinking effort tier for supporting models
             (``"low"`` / ``"medium"`` / ``"high"``).
         tool_names: Optional list of tool names to scope the registry
