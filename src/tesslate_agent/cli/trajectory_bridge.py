@@ -130,9 +130,10 @@ class TrajectoryBridge:
             return
 
         if event_type == "tool_result":
-            tool_call_id = event.get("tool_call_id", "")
-            result = event.get("result", "")
-            self._recorder.record_tool_result(tool_call_id, content=str(result))
+            # Per-call streaming events for live UIs. Tool results are
+            # already recorded by `_handle_agent_step` (matched to their
+            # originating call IDs), so skip to avoid double-recording
+            # entries with empty source_call_ids.
             return
 
         if event_type == "complete":

@@ -72,16 +72,6 @@ class _FakeAgent:
             },
         }
 
-        yield {
-            "type": "agent_step",
-            "data": {
-                "iteration": 1,
-                "response_text": "I'll write a file",
-                "tool_calls": [tool_call],
-                "tool_results": [],
-            },
-        }
-
         # Execute the tool call against the real registry so the
         # write actually lands on disk. This mirrors what TesslateAgent
         # would do during a normal iteration.
@@ -93,10 +83,30 @@ class _FakeAgent:
             exec_context,
         )
 
+        # Streaming-style per-call event (consumed by live UIs, ignored
+        # by the trajectory bridge).
         yield {
             "type": "tool_result",
-            "tool_call_id": "c1",
-            "result": result,
+            "data": {
+                "iteration": 1,
+                "index": 0,
+                "total": 1,
+                "name": "write_file",
+                "parameters": {"file_path": "output.txt", "content": "hello"},
+                "result": result,
+            },
+        }
+
+        # Authoritative agent_step with the executed tool_results — this
+        # is what the bridge records into the trajectory.
+        yield {
+            "type": "agent_step",
+            "data": {
+                "iteration": 1,
+                "response_text": "I'll write a file",
+                "tool_calls": [tool_call],
+                "tool_results": [result],
+            },
         }
 
         yield {
@@ -145,6 +155,27 @@ async def test_run_agent_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert loaded["schema_version"] == "ATIF-v1.4"
     assert "final_metrics" in loaded
     assert loaded["steps"], "trajectory should contain at least one step"
+
+    # Regression: every observation result must reference a real tool
+    # call in its parent step. Empty source_call_ids broke ATIF strict
+    # validation in earlier versions because the trajectory bridge
+    # double-recorded streaming `tool_result` events.
+    for step in loaded["steps"]:
+        observation = step.get("observation") or {}
+        results = observation.get("results", [])
+        if not results:
+            continue
+        call_ids = {tc.get("tool_call_id") for tc in step.get("tool_calls", [])}
+        for result in results:
+            source = result.get("source_call_id")
+            assert source, (
+                f"step {step['step_id']} has observation result with empty "
+                f"source_call_id: {result}"
+            )
+            assert source in call_ids, (
+                f"step {step['step_id']} observation references "
+                f"source_call_id={source!r} not present in tool_calls={call_ids}"
+            )
 
     # Restore cache state for downstream tests.
     OrchestratorFactory.clear_cache()
