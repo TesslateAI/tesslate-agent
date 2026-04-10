@@ -1,0 +1,63 @@
+"""
+Deployment Mode Enumeration.
+
+Defines the supported deployment modes for container orchestration.
+This enum provides type-safe deployment mode handling throughout the codebase.
+"""
+
+from enum import StrEnum
+
+
+class DeploymentMode(StrEnum):
+    """
+    Supported deployment modes for container orchestration.
+
+    Attributes:
+        DOCKER: Local development using Docker Compose + Traefik.
+        KUBERNETES: Production deployment using Kubernetes + NGINX Ingress.
+        LOCAL: Direct filesystem + subprocess execution on the host machine
+            (no container isolation — used for sandboxed agent environments).
+    """
+
+    DOCKER = "docker"
+    KUBERNETES = "kubernetes"
+    LOCAL = "local"
+
+    @classmethod
+    def from_string(cls, value: str) -> "DeploymentMode":
+        """
+        Convert a string to a :class:`DeploymentMode`.
+
+        Args:
+            value: String value (``"docker"``, ``"kubernetes"``, or ``"local"``).
+
+        Returns:
+            The matching :class:`DeploymentMode`.
+
+        Raises:
+            ValueError: If ``value`` is not a valid deployment mode.
+        """
+        value_lower = value.lower().strip()
+        for mode in cls:
+            if mode.value == value_lower:
+                return mode
+        valid_modes = ", ".join([m.value for m in cls])
+        raise ValueError(f"Invalid deployment mode: '{value}'. Valid modes: {valid_modes}")
+
+    @property
+    def is_docker(self) -> bool:
+        """Return ``True`` when this is the Docker deployment mode."""
+        return self == DeploymentMode.DOCKER
+
+    @property
+    def is_kubernetes(self) -> bool:
+        """Return ``True`` when this is the Kubernetes deployment mode."""
+        return self == DeploymentMode.KUBERNETES
+
+    @property
+    def is_local(self) -> bool:
+        """Return ``True`` when this is the local (filesystem + subprocess) mode."""
+        return self == DeploymentMode.LOCAL
+
+    def __str__(self) -> str:
+        return self.value

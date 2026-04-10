@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tesslate-agent"
+version = "0.1.0"
+description = "Standalone autonomous agent with 30+ built-in tools for code editing, shell execution, navigation, git, memory, structured planning, and subagent delegation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Tesslate AI" }]
+keywords = ["agent", "llm", "ai", "coding", "terminal"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "litellm>=1.50.0",
+    "pydantic>=2.0",
+    "ptyprocess>=0.7.0",
+    "pathspec>=0.12.0",
+    "aiofiles>=23.0",
+    "httpx>=0.27.0",
+    "tenacity>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+tesslate-agent = "tesslate_agent.cli.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/Tesslate-AI/tesslate-agent"
+Repository = "https://github.com/Tesslate-AI/tesslate-agent"
+Issues = "https://github.com/Tesslate-AI/tesslate-agent/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tesslate_agent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "UP"]
+ignore = ["E501"]
