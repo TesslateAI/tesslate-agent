@@ -19,3 +19,10 @@ htmlcov/
 .vscode/
 *.log
 .DS_Store
+
+# Local iteration files — never pushed
+.env
+.env.local
+examples/harbor/.env
+jobs/
+trials/
