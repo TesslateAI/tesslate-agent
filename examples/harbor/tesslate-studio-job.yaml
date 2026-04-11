@@ -14,7 +14,9 @@
 
 jobs_dir: jobs
 n_attempts: 1
-n_concurrent_trials: 1
+# Run both tasks in parallel. Bump higher if you have the budget and the
+# environment provider can spin enough sandboxes concurrently.
+n_concurrent_trials: 2
 quiet: false
 timeout_multiplier: 1.0
 
@@ -76,11 +78,12 @@ agents:
 datasets:
   - name: terminal-bench/terminal-bench-2
 
-    # Pick a specific task by its full registry id. Comment out to run
-    # the entire dataset (89 tasks). You can also use shell-style globs
+    # Pick specific tasks by full registry id. Comment out to run the
+    # entire dataset (89 tasks). You can also use shell-style globs
     # here, or use `exclude_task_names` to skip a subset.
     task_names:
-      - terminal-bench/distribution-search
+      - terminal-bench/circuit-fibsqrt
+      - terminal-bench/feal-linear-cryptanalysis
 
     # Cap how many tasks run in this job after the include/exclude
     # filters apply. Useful for cheap smoke tests.
