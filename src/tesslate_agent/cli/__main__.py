@@ -68,12 +68,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-iterations",
         type=int,
-        default=30,
+        default=0,
         help=(
-            "Maximum number of agent iterations (default: 30). "
-            "Pass 0 (or any non-positive value) to disable the cap and "
-            "let the agent run until it terminates on its own or the "
-            "host kills it."
+            "Maximum number of agent iterations. Default 0 = no cap; "
+            "the agent runs until it terminates on its own, the host "
+            "kills it, or the model provider rate-limits/budgets it. "
+            "Pass any positive integer to bound the loop explicitly."
         ),
     )
     run_parser.add_argument(

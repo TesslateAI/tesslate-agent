@@ -64,7 +64,9 @@ RETRYABLE_KEYWORDS: frozenset[str] = frozenset(
 
 DEFAULT_CONTEXT_WINDOW = 128_000
 DEFAULT_COMPACTION_THRESHOLD = 0.8
-DEFAULT_MAX_ITERATIONS = 30
+DEFAULT_MAX_ITERATIONS = 0  # 0 = no cap; the loop runs until the model
+# stops emitting tool calls or the host kills it. Set a positive integer
+# to bound the loop explicitly.
 
 # Tool output truncation (per tool result, when fed back to the model)
 MAX_TOOL_OUTPUT = 10_000

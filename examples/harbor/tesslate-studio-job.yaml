@@ -1,0 +1,87 @@
+# Harbor job config for running tesslate-studio against Terminal-Bench 2.0.
+#
+# Run with:
+#   harbor run --config examples/harbor/tesslate-studio-job.yaml
+#
+# Prerequisites:
+#   1. The harbor CLI installed (`uv tool install harbor`).
+#   2. A working environment provider:
+#        - `modal`  → `modal token set ...` (Modal cloud sandboxes)
+#        - `docker` → local Docker daemon running
+#   3. A LiteLLM gateway key OR a direct provider key. The example below
+#      uses a LiteLLM proxy at `LITELLM_API_BASE` + `LITELLM_MASTER_KEY`,
+#      which is forwarded into the sandbox at runtime.
+
+jobs_dir: jobs
+n_attempts: 1
+n_concurrent_trials: 1
+quiet: false
+timeout_multiplier: 1.0
+
+# Switch `type` to `docker` for local runs. Modal is the easiest single-
+# container backend for Terminal-Bench tasks and does not require a local
+# Docker daemon. Daytona / e2b / runloop / gke are also valid types.
+environment:
+  type: modal
+  force_build: false
+  delete: true
+
+agents:
+  - name: tesslate-studio
+    # Any LiteLLM-compatible model identifier. The provider prefix is
+    # required so the LiteLLM SDK can route the call. When you are
+    # going through a LiteLLM proxy that is OpenAI-compatible, prefix
+    # the underlying model name with `openai/` so the SDK takes the
+    # OpenAI HTTP path against your `LITELLM_API_BASE`.
+    model_name: openai/kimi-k2.5
+
+    # Optional. Forwarded to the in-sandbox `tesslate-agent run` CLI as
+    # constructor kwargs on the harbor adapter. Anything you can pass via
+    # `--ak <key>=<value>` on the command line goes here.
+    kwargs:
+      # 0 = no iteration cap; the run terminates only when the model
+      # stops emitting tool calls or the host kills the process. The
+      # capped LiteLLM key is what bounds spend.
+      max_iterations: 0
+      # `low` / `medium` / `high` — forwarded to providers that honour
+      # the `reasoning_effort` extra-body field.
+      effort: medium
+      # Wall-clock budget for a single agent invocation, in milliseconds.
+      # Harbor adds a 60s safety margin on top before killing the
+      # subprocess.
+      timeout_ms: 900000
+
+    # IMPORTANT: harbor does NOT expand ${VAR} inside YAML. Two ways
+    # to supply credentials:
+    #
+    #   (a) Export them in your shell before running harbor. The
+    #       tesslate-studio adapter reads its passthrough list directly
+    #       from os.environ, so this Just Works:
+    #         export LITELLM_API_BASE=https://litellm.saipriya.org/v1
+    #         export LITELLM_MASTER_KEY=sk-...
+    #         harbor run --config examples/harbor/tesslate-studio-job.yaml
+    #
+    #   (b) Override on the CLI with --ae:
+    #         harbor run --config <this file> \
+    #           --ae LITELLM_API_BASE=https://litellm.saipriya.org/v1 \
+    #           --ae LITELLM_MASTER_KEY=sk-...
+    #
+    # The default passthrough list covers LITELLM_API_BASE,
+    # LITELLM_MASTER_KEY, every <PROVIDER>_API_KEY (OPENAI, ANTHROPIC,
+    # OPENROUTER, GROQ, TOGETHER, DEEPSEEK, FIREWORKS), the matching
+    # *_API_BASE overrides, and any TESSLATE_* variable. Anything in
+    # this `env:` block takes priority over the host environment.
+    env: {}
+
+datasets:
+  - name: terminal-bench/terminal-bench-2
+
+    # Pick a specific task by its full registry id. Comment out to run
+    # the entire dataset (89 tasks). You can also use shell-style globs
+    # here, or use `exclude_task_names` to skip a subset.
+    task_names:
+      - terminal-bench/distribution-search
+
+    # Cap how many tasks run in this job after the include/exclude
+    # filters apply. Useful for cheap smoke tests.
+    # n_tasks: 5
