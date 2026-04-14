@@ -1,0 +1,98 @@
+# Harbor job config for a statistically-clean head-to-head against
+# Terminus 2 / Kimi k2.5 on Terminal-Bench 2.0.
+#
+# Run with:
+#   ./run.sh --config examples/harbor/tesslate-studio-job-headtohead.yaml
+#
+# Methodology
+# -----------
+# Reference: Terminus 2 / Kimi k2.5, 5 trials per task, from
+# terminal_bench/terminal_bench_heatmap.csv.
+#
+# `n_attempts: 1` — fast/cheap single-trial sweep. Results are
+# directional (27 binary outcomes) rather than a clean per-task rate
+# comparison, but fit in ~20 min wall clock with high Modal concurrency.
+# Bump to 5 later if a directional win warrants a proper confirmation.
+#
+# Task set (27 tasks × 1 = 27 runs):
+#
+#   1. The 22 "signal band" tasks Terminus 2 scored 20–60% on. These are
+#      the tasks where harness quality can move the needle — if our
+#      scaffold is better, flips here are the clearest win.
+#
+#   2. Plus 5 "crackable zeros": tasks Terminus 2 scored 0/5 on, but a
+#      peer model (similar weight class — Minimax m2.5, GLM 5, DeepSeek-
+#      V3.2, Grok 4.20 Reasoning, etc.) solved at 100%. These prove the
+#      model CAN do the task; Terminus 2's harness just didn't get
+#      there. If we flip any of these from 0/5 → >0/5, that's the
+#      strongest possible "better harness" claim.
+#
+# Tasks excluded on purpose:
+#   - 0% tasks where no peer model solved them (12 tasks) → capability
+#     walls for this weight class, no harness flips them.
+#   - 80–100% tasks (31 tasks) → no headroom, Terminus 2 already near
+#     ceiling, runs only risk regressions.
+
+jobs_dir: jobs
+n_attempts: 1
+# Bedrock quota for Kimi K2.5 on this account is 100 RPM (1% of default).
+# tesslate-agent bursts ~20 RPM per session on startup, so 6 concurrent
+# ≈ 120 RPM peak — brief spillover is soaked by LiteLLM's client-side
+# retries. Higher values break (we tried 32 and got 16/20 NonZero exits
+# via Bedrock "Too many requests"). See Service Quotas: "On-demand model
+# inference requests per minute for Moonshot AI Kimi K2.5".
+n_concurrent_trials: 6
+quiet: false
+timeout_multiplier: 1.0
+
+environment:
+  type: modal
+  force_build: false
+  delete: true
+
+agents:
+  - name: tesslate-studio
+    model_name: openai/kimi-k2.5
+    kwargs:
+      max_iterations: 0
+      effort: medium
+      timeout_ms: 900000
+    env: {}
+
+datasets:
+  - name: terminal-bench/terminal-bench-2
+    task_names:
+      # --- Signal band: Terminus 2 scored 20–60% on these (22 tasks) ---
+      # 20% (1/5)
+      - terminal-bench/feal-differential-cryptanalysis
+      - terminal-bench/fix-ocaml-gc
+      - terminal-bench/model-extraction-relu-logits
+      - terminal-bench/sparql-university
+      - terminal-bench/train-fasttext
+      # 40% (2/5)
+      - terminal-bench/adaptive-rejection-sampler
+      - terminal-bench/bn-fit-modify
+      - terminal-bench/build-cython-ext
+      - terminal-bench/count-dataset-tokens
+      - terminal-bench/extract-elf
+      - terminal-bench/largest-eigenval
+      - terminal-bench/password-recovery
+      - terminal-bench/schemelike-metacircular-eval
+      - terminal-bench/sqlite-with-gcov
+      # 60% (3/5)
+      - terminal-bench/cancel-async-tasks
+      - terminal-bench/merge-diff-arc-agi-task
+      - terminal-bench/openssl-selfsigned-cert
+      - terminal-bench/pytorch-model-cli
+      - terminal-bench/pytorch-model-recovery
+      - terminal-bench/rstan-to-pystan
+      - terminal-bench/sqlite-db-truncate
+      - terminal-bench/tune-mjcf
+
+      # --- Crackable zeros: Terminus 2 = 0/5, peer at 100% (5 tasks) ---
+      # These prove Kimi k2.5 is capable; harness is the only variable.
+      - terminal-bench/break-filter-js-from-html    # peer: grok-cli/Grok 4.20 Reasoning
+      - terminal-bench/mailman                      # peer: Terminus 2/GLM 5
+      - terminal-bench/query-optimize               # peer: Terminus 2/Minimax m2.5
+      - terminal-bench/sanitize-git-repo            # peer: cchuter/minimax-m2.5
+      - terminal-bench/winning-avg-corewars         # peer: grok-cli/Grok 4.20 Reasoning

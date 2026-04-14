@@ -1,0 +1,79 @@
+# Harbor job config for running tesslate-studio against Terminal-Bench 2.0,
+# excluding the 36 tasks that Kimi k2.5 scored 0% on in the Terminus 2
+# reference run (see terminal_bench/terminal_bench_heatmap.csv). Those
+# tasks are model-capability walls — running them burns budget for no
+# signal with this model.
+#
+# Runs 53 tasks instead of the full 89 (≈40% budget savings vs. a full
+# sweep). This is the set where a different agent harness can actually
+# move the needle vs. Terminus 2.
+#
+# Run with:
+#   ./run.sh --config examples/harbor/tesslate-studio-job-winnable.yaml
+
+jobs_dir: jobs
+n_attempts: 1
+n_concurrent_trials: 16
+quiet: false
+timeout_multiplier: 1.0
+
+environment:
+  type: modal
+  force_build: false
+  delete: true
+
+agents:
+  - name: tesslate-studio
+    model_name: openai/kimi-k2.5
+    kwargs:
+      max_iterations: 0
+      effort: medium
+      timeout_ms: 900000
+    env: {}
+
+datasets:
+  - name: terminal-bench/terminal-bench-2
+
+    # Skip the 36 tasks Kimi k2.5 (Terminus 2, 1 trial) scored 0% on.
+    # Rationale: these are capability walls for this model — Terminus 2
+    # is a well-tuned harness, so a different scaffold is unlikely to
+    # flip a 0% to a pass in one attempt. Rerun the full set only if
+    # you specifically want to measure harness-level improvements on
+    # hard tasks.
+    exclude_task_names:
+      - terminal-bench/break-filter-js-from-html
+      - terminal-bench/caffe-cifar-10
+      - terminal-bench/chess-best-move
+      - terminal-bench/circuit-fibsqrt
+      - terminal-bench/db-wal-recovery
+      - terminal-bench/dna-assembly
+      - terminal-bench/dna-insert
+      - terminal-bench/extract-moves-from-video
+      - terminal-bench/feal-linear-cryptanalysis
+      - terminal-bench/filter-js-from-html
+      - terminal-bench/financial-document-processor
+      - terminal-bench/gcode-to-text
+      - terminal-bench/gpt2-codegolf
+      - terminal-bench/install-windows-3.11
+      - terminal-bench/mailman
+      - terminal-bench/make-doom-for-mips
+      - terminal-bench/make-mips-interpreter
+      - terminal-bench/mteb-leaderboard
+      - terminal-bench/mteb-retrieve
+      - terminal-bench/overfull-hbox
+      - terminal-bench/path-tracing
+      - terminal-bench/path-tracing-reverse
+      - terminal-bench/polyglot-c-py
+      - terminal-bench/polyglot-rust-c
+      - terminal-bench/protein-assembly
+      - terminal-bench/qemu-alpine-ssh
+      - terminal-bench/query-optimize
+      - terminal-bench/raman-fitting
+      - terminal-bench/regex-chess
+      - terminal-bench/sam-cell-seg
+      - terminal-bench/sanitize-git-repo
+      - terminal-bench/torch-pipeline-parallelism
+      - terminal-bench/torch-tensor-parallelism
+      - terminal-bench/video-processing
+      - terminal-bench/winning-avg-corewars
+      - terminal-bench/write-compressor
