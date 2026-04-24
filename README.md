@@ -3,7 +3,7 @@
 Standalone autonomous agent with 30+ built-in tools for code editing, shell
 execution, navigation, git, memory, structured planning, and subagent
 delegation. Single-process, batteries-included, zero runtime dependencies on
-the Tesslate Studio orchestrator.
+the OpenSail orchestrator.
 
 ## Install
 

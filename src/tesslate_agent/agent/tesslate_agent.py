@@ -497,8 +497,90 @@ class TesslateAgent(AbstractAgent):
                 if isinstance(entry, dict) and entry.get("role"):
                     messages.append(entry)
 
-        messages.append({"role": "user", "content": user_request})
+        messages.append(
+            self._build_user_turn(user_request, context.get("attachments") or [])
+        )
         return messages
+
+    # Defense-in-depth caps mirroring the API-schema limits. If a payload
+    # somehow slips past the schema (legacy client, internal enqueue path),
+    # we still clip rather than blow the context window.
+    _MAX_PASTED_TEXT_CHARS = 100_000
+    _MAX_IMAGE_BASE64_CHARS = 20_000_000
+
+    @staticmethod
+    def _build_user_turn(
+        user_request: str,
+        attachments: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Compose the user turn, folding chat attachments into the prompt.
+
+        ``pasted_text`` and ``file_reference`` attachments are inlined as
+        labeled text blocks. ``image`` attachments become OpenAI vision
+        content-parts. Without attachments the payload is unchanged so
+        non-attachment flows keep their existing shape. Oversized payloads
+        are truncated with a visible marker instead of dropped silently.
+        """
+        if not attachments:
+            return {"role": "user", "content": user_request}
+
+        text_blocks: list[str] = []
+        if user_request:
+            text_blocks.append(user_request)
+
+        image_parts: list[dict[str, Any]] = []
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            att_type = att.get("type")
+            label = att.get("label") or att_type or "attachment"
+
+            if att_type == "pasted_text":
+                body = att.get("content") or ""
+                if len(body) > TesslateAgent._MAX_PASTED_TEXT_CHARS:
+                    dropped = len(body) - TesslateAgent._MAX_PASTED_TEXT_CHARS
+                    body = (
+                        body[: TesslateAgent._MAX_PASTED_TEXT_CHARS]
+                        + f"\n… [truncated: {dropped} more chars]"
+                    )
+                text_blocks.append(f"\n[{label}]\n{body}")
+            elif att_type == "file_reference":
+                fp = att.get("file_path") or "unknown"
+                text_blocks.append(f"\n[attached file: {fp}]")
+            elif att_type == "image":
+                b64 = att.get("content") or ""
+                if not b64:
+                    continue
+                if len(b64) > TesslateAgent._MAX_IMAGE_BASE64_CHARS:
+                    logger.warning(
+                        "[TesslateAgent] dropping oversized image attachment "
+                        "(%d base64 chars, cap %d)",
+                        len(b64),
+                        TesslateAgent._MAX_IMAGE_BASE64_CHARS,
+                    )
+                    text_blocks.append(
+                        f"\n[{label}: image exceeded size cap, not attached]"
+                    )
+                    continue
+                mime = att.get("mime_type") or "image/png"
+                image_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}"},
+                    }
+                )
+
+        combined_text = "\n".join(text_blocks).strip() or "(attachments only)"
+
+        if image_parts:
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": combined_text},
+                    *image_parts,
+                ],
+            }
+        return {"role": "user", "content": combined_text}
 
     def _get_openai_tools(self) -> list[dict[str, Any]]:
         """Return the tool set in OpenAI function-tool format, or ``[]``."""
