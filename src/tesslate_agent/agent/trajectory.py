@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 AGENT_NAME = "tesslate-agent"
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.2.0"
 SCHEMA_VERSION = "ATIF-v1.4"
 
 

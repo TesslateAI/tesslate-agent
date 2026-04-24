@@ -147,18 +147,28 @@ async def write_file_tool(
     )
 
     try:
+        from ._write_fence import fence_file
+
         orchestrator = get_orchestrator()
-        success = await orchestrator.write_file(
-            user_id=user_id,
-            project_id=project_id,
-            container_name=container_name,
-            file_path=file_path,
-            content=content,
-            project_slug=project_slug,
-            subdir=container_directory,
-            volume_id=context.get("volume_id"),
-            cache_node=context.get("cache_node"),
-        )
+        async with fence_file(project_id, file_path):
+            success = await orchestrator.write_file(
+                user_id=user_id,
+                project_id=project_id,
+                container_name=container_name,
+                file_path=file_path,
+                content=content,
+                project_slug=project_slug,
+                subdir=container_directory,
+                volume_id=context.get("volume_id"),
+                cache_node=context.get("cache_node"),
+            )
+
+        try:
+            from tesslate_agent.agent.tools.file_ops.read_many import get_recent_file_tracker
+
+            await get_recent_file_tracker().record(context, file_path)
+        except Exception:
+            pass
 
         if success:
             return success_output(

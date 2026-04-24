@@ -145,26 +145,29 @@ async def patch_file_tool(
         "cache_node": context.get("cache_node"),
     }
 
-    orchestrator = get_orchestrator()
-    try:
-        current_content = await orchestrator.read_file(
-            user_id=user_id,
-            project_id=project_id,
-            container_name=container_name,
-            file_path=file_path,
-            project_slug=project_slug,
-            subdir=container_directory,
-            **volume_hints,
-        )
-    except Exception as exc:
-        logger.error("[PATCH-FILE] Failed to read '%s': %s", file_path, exc)
-        current_content = None
+    from ._write_fence import fence_file
 
-    if current_content is None:
-        return error_output(
-            message=f"File '{file_path}' does not exist",
-            suggestion=(
-                "Use write_file to create new files, or list the directory first "
+    orchestrator = get_orchestrator()
+    async with fence_file(project_id, file_path):
+        try:
+            current_content = await orchestrator.read_file(
+                user_id=user_id,
+                project_id=project_id,
+                container_name=container_name,
+                file_path=file_path,
+                project_slug=project_slug,
+                subdir=container_directory,
+                **volume_hints,
+            )
+        except Exception as exc:
+            logger.error("[PATCH-FILE] Failed to read '%s': %s", file_path, exc)
+            current_content = None
+
+        if current_content is None:
+            return error_output(
+                message=f"File '{file_path}' does not exist",
+                suggestion=(
+                    "Use write_file to create new files, or list the directory first "
                 "to verify the path."
             ),
             file_path=file_path,

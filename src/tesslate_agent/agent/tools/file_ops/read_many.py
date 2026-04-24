@@ -418,6 +418,13 @@ async def read_many_files_tool(
     if skipped:
         summary += f", skipped {pluralize(len(skipped), 'file')}"
 
+    try:
+        tracker = get_recent_file_tracker()
+        paths = [f["path"] for f in files_out if f.get("path")]
+        await tracker.record_many(context, paths)
+    except Exception:
+        pass
+
     return success_output(
         message=summary,
         files=files_out,
@@ -503,3 +510,67 @@ def register_read_many_files_tool(registry) -> None:
             ],
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Recent file tracker (ring buffer for post-compact re-injection)
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+from collections import OrderedDict  # noqa: E402
+
+_DEFAULT_RING_SIZE = 20
+_TRACKER: RecentFileTracker | None = None
+
+
+def _storage_key(context: dict[str, Any]) -> str:
+    user_id = context.get("user_id", "unknown")
+    project_id = context.get("project_id", "unknown")
+    return f"user_{user_id}_project_{project_id}"
+
+
+class RecentFileTracker:
+    """Per-(user, project) ring buffer of recently-accessed file paths."""
+
+    def __init__(self, ring_size: int = _DEFAULT_RING_SIZE):
+        self._ring_size = max(1, ring_size)
+        self._buffers: dict[str, OrderedDict[str, None]] = {}
+        self._lock = asyncio.Lock()
+
+    async def record(self, context: dict[str, Any], path: str | None) -> None:
+        if not path or not isinstance(path, str):
+            return
+        key = _storage_key(context)
+        async with self._lock:
+            buf = self._buffers.setdefault(key, OrderedDict())
+            buf.pop(path, None)
+            buf[path] = None
+            while len(buf) > self._ring_size:
+                buf.popitem(last=False)
+
+    async def record_many(self, context: dict[str, Any], paths: list[str]) -> None:
+        for p in paths:
+            await self.record(context, p)
+
+    async def recent(self, context: dict[str, Any], limit: int = 5) -> list[str]:
+        if limit <= 0:
+            return []
+        key = _storage_key(context)
+        async with self._lock:
+            buf = self._buffers.get(key)
+            if not buf:
+                return []
+            return list(reversed(buf.keys()))[:limit]
+
+    async def clear(self, context: dict[str, Any]) -> None:
+        key = _storage_key(context)
+        async with self._lock:
+            self._buffers.pop(key, None)
+
+
+def get_recent_file_tracker() -> RecentFileTracker:
+    """Process-wide singleton accessor."""
+    global _TRACKER
+    if _TRACKER is None:
+        _TRACKER = RecentFileTracker()
+    return _TRACKER
