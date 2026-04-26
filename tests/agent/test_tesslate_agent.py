@@ -12,10 +12,9 @@ import pytest
 
 from tesslate_agent.agent.base import AbstractAgent
 from tesslate_agent.agent.models import ModelAdapter
-from tesslate_agent.agent.tesslate_agent import TesslateAgent
+from tesslate_agent.agent.tesslate_agent import TesslateAgent, format_tool_result
 from tesslate_agent.agent.tools.registry import Tool, ToolCategory, ToolRegistry
 from tesslate_agent.agent.trajectory import TrajectoryRecorder
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -396,3 +395,151 @@ async def test_trajectory_recorder_integration() -> None:
     assert atif["final_metrics"]["total_steps"] >= 1
     assert atif["agent"]["model_name"] == "fake/test-model"
     assert any(step["source"] == "agent" for step in atif["steps"])
+
+
+# ---------------------------------------------------------------------------
+# format_tool_result tests — Bug #198
+# ---------------------------------------------------------------------------
+
+
+def test_format_tool_result_plan_mode_block_shows_message() -> None:
+    """Plan-mode blocks return 'error' key directly; message must be visible."""
+    result = {
+        "success": False,
+        "tool": "write_file",
+        "error": "Plan mode active - write_file is disabled.",
+    }
+    text = format_tool_result(result)
+    assert "Plan mode active" in text
+    assert "write_file" in text
+
+
+def test_format_tool_result_error_output_format_propagates_message() -> None:
+    """Tools using error_output() embed the message in result.message, not
+    at the top-level error key. format_tool_result must fall back to that."""
+    result = {
+        "success": False,
+        "tool": "write_file",
+        "result": {
+            "success": False,
+            "message": "Disk quota exceeded — cannot write 4.2 MB",
+            "suggestion": "Remove large build artifacts before retrying",
+        },
+    }
+    text = format_tool_result(result)
+    assert "Disk quota exceeded" in text
+    assert "Unknown error" not in text
+
+
+def test_format_tool_result_suggestion_from_nested_result() -> None:
+    """Suggestion from error_output() payload surfaces in the formatted text."""
+    result = {
+        "success": False,
+        "tool": "bash_exec",
+        "result": {
+            "success": False,
+            "message": "Command timed out",
+            "suggestion": "Break into smaller steps",
+        },
+    }
+    text = format_tool_result(result)
+    assert "Command timed out" in text
+    assert "Break into smaller steps" in text
+
+
+def test_format_tool_result_unknown_error_fallback() -> None:
+    """When neither 'error' nor 'result.message' is present, fall back
+    to 'Unknown error' so the model always gets actionable text."""
+    result = {"success": False, "tool": "mystery_tool"}
+    text = format_tool_result(result)
+    assert text == "Error: Unknown error"
+
+
+def test_format_tool_result_success_unchanged() -> None:
+    """Success results are not affected by the error-path fix."""
+    result = {
+        "success": True,
+        "tool": "read_file",
+        "result": {
+            "message": "read /app/README.md",
+            "content": "Hello world",
+        },
+    }
+    text = format_tool_result(result)
+    assert "read /app/README.md" in text
+    assert "Hello world" in text
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_block_message_visible_to_model() -> None:
+    """End-to-end: when a tool is blocked in plan mode, the model sees the
+    actual 'Plan mode active' message (not 'Unknown error')."""
+
+    async def _blocked_write(
+        params: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "success": False,
+            "tool": "write_file",
+            "error": "Plan mode active - write_file is disabled.",
+        }
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="write_file",
+            description="Write a file.",
+            parameters={
+                "type": "object",
+                "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}},
+                "required": ["file_path", "content"],
+            },
+            executor=_blocked_write,
+            category=ToolCategory.FILE_OPS,
+        )
+    )
+
+    responses = [
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": '{"file_path": "out.txt", "content": "hi"}',
+                    },
+                }
+            ],
+            "usage": {},
+            "finish_reason": "tool_calls",
+        },
+        {
+            "content": "I cannot write in plan mode.",
+            "tool_calls": [],
+            "usage": {},
+            "finish_reason": "stop",
+        },
+    ]
+
+    adapter = FakeAdapter(responses=responses)
+    agent = TesslateAgent(system_prompt="test", tools=registry, model=adapter)
+
+    events = await _collect_events(agent, "write out.txt")
+    tool_result_events = [e for e in events if e.get("type") == "tool_result"]
+    assert len(tool_result_events) == 1
+
+    # When the executor returns {success: False, error: "..."}, the registry
+    # wraps it as {success: False, result: {error: "..."}}. The inner dict
+    # holds the actual error message.
+    outer = tool_result_events[0]["data"]["result"]
+    inner = outer.get("result", {})
+    assert inner.get("error") == "Plan mode active - write_file is disabled."
+
+    # The model (second adapter call) must have seen the correct error text in
+    # the tool-role message content — not "Unknown error".
+    second_call_messages = adapter.calls[1]["messages"]
+    tool_msg = next(m for m in second_call_messages if m.get("role") == "tool")
+    assert "Plan mode active" in tool_msg["content"]
+    assert "Unknown error" not in tool_msg["content"]

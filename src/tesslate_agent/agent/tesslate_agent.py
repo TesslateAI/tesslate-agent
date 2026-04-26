@@ -210,7 +210,17 @@ def format_tool_result(result: dict[str, Any]) -> str:
     message. Truncates oversize outputs in the middle.
     """
     if result.get("approval_required"):
-        return f"Awaiting approval for {result.get('tool', 'unknown')}"
+        tool = result.get("tool", "unknown")
+        if result.get("response") == "stop":
+            return (
+                f"{tool} was not approved to run. "
+                f"Explain what changes you intended to make and ask the user to "
+                f"grant approval if they want to proceed."
+            )
+        return (
+            f"{tool} is awaiting user approval before it can run. "
+            f"Describe what you intend to do with this tool while the user decides."
+        )
 
     if result.get("success"):
         tool_result = result.get("result", {})
@@ -242,9 +252,17 @@ def format_tool_result(result: dict[str, Any]) -> str:
             return "\n".join(parts) if parts else json.dumps(tool_result)
         return str(tool_result)
 
-    error = result.get("error", "Unknown error")
-    suggestion = ""
+    # Prefer direct "error" key (plan-mode blocks, scope failures, exceptions).
+    # Fall back to "result.message" / "result.error" for tools that use the
+    # error_output() helper — those embed the message inside "result".
+    error = result.get("error")
     inner = result.get("result")
+    if not error and isinstance(inner, dict):
+        error = inner.get("message") or inner.get("error")
+    if not error:
+        error = "Unknown error"
+
+    suggestion = ""
     if isinstance(inner, dict):
         suggestion = str(inner.get("suggestion", ""))
     return f"Error: {error}" + (f"\nSuggestion: {suggestion}" if suggestion else "")

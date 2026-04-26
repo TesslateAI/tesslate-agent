@@ -150,8 +150,13 @@ class ToolRegistry:
     # Tools that are allowed in ``plan`` mode (read-only context gathering).
     PLAN_MODE_ALLOWED: frozenset[str] = frozenset({"bash_exec"})
 
-    def __init__(self) -> None:
+    def __init__(self, approval_handler: Any = None) -> None:
         self._tools: dict[str, Tool] = {}
+        # Optional async callable: (tool_name, params, session_id) -> str.
+        # When set, replaces the env-var ApprovalManager for ask-mode gating so
+        # the orchestrator can inject its own interactive approval flow (Redis
+        # pub/sub + frontend dialog) without the submodule knowing about it.
+        self._approval_handler = approval_handler
         logger.info("ToolRegistry initialized")
 
     def register(self, tool: Tool) -> None:
@@ -281,35 +286,56 @@ class ToolRegistry:
 
         skip_approval = context.get("skip_approval_check", False)
         if edit_mode == "ask" and is_dangerous and not skip_approval:
-            from .approval_manager import get_approval_manager
-
-            approval_mgr = get_approval_manager()
             session_id = context.get("chat_id", "default")
 
-            if not approval_mgr.is_tool_approved(session_id, tool_name):
+            if self._approval_handler is not None:
+                # Delegate to the injected handler (e.g. orchestrator's
+                # PendingUserInputManager which suspends until the user responds).
                 logger.info(
                     "[ASK MODE] Approval required for %s in session %s",
                     tool_name,
                     session_id,
                 )
-                approval_id, request = approval_mgr.request_approval(
-                    tool_name, parameters, session_id
-                )
-                if request.response != "allow_once" and request.response != "allow_all":
+                response = await self._approval_handler(tool_name, parameters, session_id)
+                if response not in ("allow_once", "allow_all"):
                     return {
                         "approval_required": True,
                         "tool": tool_name,
                         "parameters": parameters,
                         "session_id": session_id,
-                        "approval_id": approval_id,
-                        "response": request.response,
+                        "approval_id": None,
+                        "response": response or "stop",
                     }
             else:
-                logger.info(
-                    "[ASK MODE] Tool %s already approved for session %s",
-                    tool_name,
-                    session_id,
-                )
+                # Fall back to the env-var-based manager (CLI / tests).
+                from .approval_manager import get_approval_manager
+
+                approval_mgr = get_approval_manager()
+
+                if not approval_mgr.is_tool_approved(session_id, tool_name):
+                    logger.info(
+                        "[ASK MODE] Approval required for %s in session %s",
+                        tool_name,
+                        session_id,
+                    )
+                    approval_id, request = approval_mgr.request_approval(
+                        tool_name, parameters, session_id
+                    )
+                    if request.response != "allow_once" and request.response != "allow_all":
+                        return {
+                            "approval_required": True,
+                            "tool": tool_name,
+                            "parameters": parameters,
+                            "session_id": session_id,
+                            "approval_id": approval_id,
+                            "response": request.response,
+                        }
+                else:
+                    logger.info(
+                        "[ASK MODE] Tool %s already approved for session %s",
+                        tool_name,
+                        session_id,
+                    )
 
         try:
             logger.info(
