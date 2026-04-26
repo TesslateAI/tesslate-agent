@@ -34,6 +34,7 @@ from uuid import UUID
 from tesslate_agent.agent.base import AbstractAgent
 from tesslate_agent.agent.models import ModelAdapter
 from tesslate_agent.agent.tools.registry import Tool, ToolRegistry
+from tesslate_agent.errors import BudgetExhaustedError
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,15 @@ def _backoff(attempt: int) -> float:
 
 
 def _is_retryable_error(error: Exception) -> bool:
-    """Classify an exception as retryable based on keyword heuristics."""
+    """Classify an exception as retryable based on keyword heuristics.
+
+    :class:`BudgetExhaustedError` is NEVER retryable — a 429 with a
+    budget hint means the per-run / per-key allocation is gone, and
+    backoff cannot fix that. The host orchestrator catches the error
+    and either escalates for a budget extension or fails the run.
+    """
+    if isinstance(error, BudgetExhaustedError):
+        return False
     error_str = str(error).lower()
     return any(kw in error_str for kw in RETRYABLE_KEYWORDS)
 
