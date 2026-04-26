@@ -719,11 +719,18 @@ class TesslateAgent(AbstractAgent):
         if not summary:
             return messages
 
-        summary_msg = {
+        # Merge the summary into the original system message rather than
+        # injecting a second system-role entry. Multiple system messages
+        # violate Anthropic's API contract and confuse other providers.
+        original_system = keep_head[0]
+        merged_system = {
             "role": "system",
-            "content": f"[Conversation summary]\n{summary}",
+            "content": (
+                original_system.get("content", "")
+                + f"\n\n[Conversation summary — earlier context]\n{summary}"
+            ),
         }
-        return keep_head + [summary_msg] + keep_tail
+        return [merged_system] + keep_tail
 
     # ------------------------------------------------------------------
     # Event helpers

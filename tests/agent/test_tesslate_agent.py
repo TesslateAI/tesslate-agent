@@ -543,3 +543,101 @@ async def test_plan_mode_block_message_visible_to_model() -> None:
     tool_msg = next(m for m in second_call_messages if m.get("role") == "tool")
     assert "Plan mode active" in tool_msg["content"]
     assert "Unknown error" not in tool_msg["content"]
+
+
+# ---------------------------------------------------------------------------
+# Bug #203: compact_messages must not inject a second system message
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compact_messages_single_system_message() -> None:
+    """After compaction the result must have exactly one system message.
+
+    Regression for bug #203 where _compact_messages() inserted a second
+    role='system' entry as the conversation summary, causing dual system
+    messages that violate Anthropic's API contract.
+    """
+    fake_summary = "Step 1: read file. Step 2: wrote output."
+
+    class FakeCompactionAdapter(ModelAdapter):
+        @property
+        def model_name(self) -> str:
+            return "fake/compactor"
+
+        async def chat_with_tools(self, messages, tools=None, **kwargs):
+            return {"content": fake_summary, "tool_calls": [], "usage": {}, "finish_reason": "stop"}
+
+    agent = TesslateAgent(
+        system_prompt="You are a coding agent.",
+        tools=None,
+        model=None,
+        compaction_adapter=FakeCompactionAdapter(),
+    )
+
+    # Build a messages list that is long enough to trigger compaction.
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "You are a coding agent."},
+    ]
+    for i in range(10):
+        messages.append({"role": "user", "content": f"user turn {i}"})
+        messages.append({"role": "assistant", "content": f"assistant turn {i}"})
+
+    compacted = await agent._compact_messages(messages)
+
+    system_msgs = [m for m in compacted if m.get("role") == "system"]
+    assert len(system_msgs) == 1, (
+        f"Expected exactly 1 system message after compaction, got {len(system_msgs)}: "
+        f"{system_msgs}"
+    )
+    # Summary text is merged into the original system message, not a new one.
+    assert fake_summary in system_msgs[0]["content"]
+    assert "You are a coding agent." in system_msgs[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_compact_messages_no_op_when_few_messages() -> None:
+    """_compact_messages is a no-op when the history is short."""
+    agent = TesslateAgent(system_prompt="sys", tools=None, model=None)
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "world"},
+    ]
+    result = await agent._compact_messages(messages)
+    assert result is messages  # same object, not copied
+
+
+@pytest.mark.asyncio
+async def test_compact_messages_preserves_tail_verbatim() -> None:
+    """The most recent 6 messages are always kept verbatim after compaction."""
+    fake_summary = "compressed history"
+
+    class FakeCompactionAdapter(ModelAdapter):
+        @property
+        def model_name(self) -> str:
+            return "fake/compactor"
+
+        async def chat_with_tools(self, messages, tools=None, **kwargs):
+            return {
+                "content": fake_summary,
+                "tool_calls": [],
+                "usage": {},
+                "finish_reason": "stop",
+            }
+
+    agent = TesslateAgent(
+        system_prompt="sys",
+        tools=None,
+        model=None,
+        compaction_adapter=FakeCompactionAdapter(),
+    )
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": "sys"}]
+    for i in range(12):
+        messages.append({"role": "user", "content": f"u{i}"})
+        messages.append({"role": "assistant", "content": f"a{i}"})
+
+    compacted = await agent._compact_messages(messages)
+    tail = messages[-6:]
+    assert compacted[-6:] == tail
