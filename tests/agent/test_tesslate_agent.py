@@ -12,10 +12,9 @@ import pytest
 
 from tesslate_agent.agent.base import AbstractAgent
 from tesslate_agent.agent.models import ModelAdapter
-from tesslate_agent.agent.tesslate_agent import TesslateAgent
+from tesslate_agent.agent.tesslate_agent import TesslateAgent, format_tool_result
 from tesslate_agent.agent.tools.registry import Tool, ToolCategory, ToolRegistry
 from tesslate_agent.agent.trajectory import TrajectoryRecorder
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -108,7 +107,6 @@ async def _collect_events_with_context(
     events: list[dict[str, Any]] = []
     async for event in agent.run(request, context=context):
         events.append(event)
-    return events
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +406,251 @@ async def test_trajectory_recorder_integration() -> None:
     assert atif["agent"]["model_name"] == "fake/test-model"
     assert any(step["source"] == "agent" for step in atif["steps"])
 
+
+# ---------------------------------------------------------------------------
+# format_tool_result tests — Bug #198
+# ---------------------------------------------------------------------------
+
+
+def test_format_tool_result_plan_mode_block_shows_message() -> None:
+    """Plan-mode blocks return 'error' key directly; message must be visible."""
+    result = {
+        "success": False,
+        "tool": "write_file",
+        "error": "Plan mode active - write_file is disabled.",
+    }
+    text = format_tool_result(result)
+    assert "Plan mode active" in text
+    assert "write_file" in text
+
+
+def test_format_tool_result_error_output_format_propagates_message() -> None:
+    """Tools using error_output() embed the message in result.message, not
+    at the top-level error key. format_tool_result must fall back to that."""
+    result = {
+        "success": False,
+        "tool": "write_file",
+        "result": {
+            "success": False,
+            "message": "Disk quota exceeded — cannot write 4.2 MB",
+            "suggestion": "Remove large build artifacts before retrying",
+        },
+    }
+    text = format_tool_result(result)
+    assert "Disk quota exceeded" in text
+    assert "Unknown error" not in text
+
+
+def test_format_tool_result_suggestion_from_nested_result() -> None:
+    """Suggestion from error_output() payload surfaces in the formatted text."""
+    result = {
+        "success": False,
+        "tool": "bash_exec",
+        "result": {
+            "success": False,
+            "message": "Command timed out",
+            "suggestion": "Break into smaller steps",
+        },
+    }
+    text = format_tool_result(result)
+    assert "Command timed out" in text
+    assert "Break into smaller steps" in text
+
+
+def test_format_tool_result_unknown_error_fallback() -> None:
+    """When neither 'error' nor 'result.message' is present, fall back
+    to 'Unknown error' so the model always gets actionable text."""
+    result = {"success": False, "tool": "mystery_tool"}
+    text = format_tool_result(result)
+    assert text == "Error: Unknown error"
+
+
+def test_format_tool_result_success_unchanged() -> None:
+    """Success results are not affected by the error-path fix."""
+    result = {
+        "success": True,
+        "tool": "read_file",
+        "result": {
+            "message": "read /app/README.md",
+            "content": "Hello world",
+        },
+    }
+    text = format_tool_result(result)
+    assert "read /app/README.md" in text
+    assert "Hello world" in text
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_block_message_visible_to_model() -> None:
+    """End-to-end: when a tool is blocked in plan mode, the model sees the
+    actual 'Plan mode active' message (not 'Unknown error')."""
+
+    async def _blocked_write(
+        params: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "success": False,
+            "tool": "write_file",
+            "error": "Plan mode active - write_file is disabled.",
+        }
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="write_file",
+            description="Write a file.",
+            parameters={
+                "type": "object",
+                "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}},
+                "required": ["file_path", "content"],
+            },
+            executor=_blocked_write,
+            category=ToolCategory.FILE_OPS,
+        )
+    )
+
+    responses = [
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": '{"file_path": "out.txt", "content": "hi"}',
+                    },
+                }
+            ],
+            "usage": {},
+            "finish_reason": "tool_calls",
+        },
+        {
+            "content": "I cannot write in plan mode.",
+            "tool_calls": [],
+            "usage": {},
+            "finish_reason": "stop",
+        },
+    ]
+
+    adapter = FakeAdapter(responses=responses)
+    agent = TesslateAgent(system_prompt="test", tools=registry, model=adapter)
+
+    events = await _collect_events(agent, "write out.txt")
+    tool_result_events = [e for e in events if e.get("type") == "tool_result"]
+    assert len(tool_result_events) == 1
+
+    # When the executor returns {success: False, error: "..."}, the registry
+    # wraps it as {success: False, result: {error: "..."}}. The inner dict
+    # holds the actual error message.
+    outer = tool_result_events[0]["data"]["result"]
+    inner = outer.get("result", {})
+    assert inner.get("error") == "Plan mode active - write_file is disabled."
+
+    # The model (second adapter call) must have seen the correct error text in
+    # the tool-role message content — not "Unknown error".
+    second_call_messages = adapter.calls[1]["messages"]
+    tool_msg = next(m for m in second_call_messages if m.get("role") == "tool")
+    assert "Plan mode active" in tool_msg["content"]
+    assert "Unknown error" not in tool_msg["content"]
+
+
+# ---------------------------------------------------------------------------
+# Bug #203: compact_messages must not inject a second system message
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compact_messages_single_system_message() -> None:
+    """After compaction the result must have exactly one system message.
+
+    Regression for bug #203 where _compact_messages() inserted a second
+    role='system' entry as the conversation summary, causing dual system
+    messages that violate Anthropic's API contract.
+    """
+    fake_summary = "Step 1: read file. Step 2: wrote output."
+
+    class FakeCompactionAdapter(ModelAdapter):
+        @property
+        def model_name(self) -> str:
+            return "fake/compactor"
+
+        async def chat_with_tools(self, messages, tools=None, **kwargs):
+            return {"content": fake_summary, "tool_calls": [], "usage": {}, "finish_reason": "stop"}
+
+    agent = TesslateAgent(
+        system_prompt="You are a coding agent.",
+        tools=None,
+        model=None,
+        compaction_adapter=FakeCompactionAdapter(),
+    )
+
+    # Build a messages list that is long enough to trigger compaction.
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "You are a coding agent."},
+    ]
+    for i in range(10):
+        messages.append({"role": "user", "content": f"user turn {i}"})
+        messages.append({"role": "assistant", "content": f"assistant turn {i}"})
+
+    compacted = await agent._compact_messages(messages)
+
+    system_msgs = [m for m in compacted if m.get("role") == "system"]
+    assert len(system_msgs) == 1, (
+        f"Expected exactly 1 system message after compaction, got {len(system_msgs)}: "
+        f"{system_msgs}"
+    )
+    # Summary text is merged into the original system message, not a new one.
+    assert fake_summary in system_msgs[0]["content"]
+    assert "You are a coding agent." in system_msgs[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_compact_messages_no_op_when_few_messages() -> None:
+    """_compact_messages is a no-op when the history is short."""
+    agent = TesslateAgent(system_prompt="sys", tools=None, model=None)
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "world"},
+    ]
+    result = await agent._compact_messages(messages)
+    assert result is messages  # same object, not copied
+
+
+@pytest.mark.asyncio
+async def test_compact_messages_preserves_tail_verbatim() -> None:
+    """The most recent 6 messages are always kept verbatim after compaction."""
+    fake_summary = "compressed history"
+
+    class FakeCompactionAdapter(ModelAdapter):
+        @property
+        def model_name(self) -> str:
+            return "fake/compactor"
+
+        async def chat_with_tools(self, messages, tools=None, **kwargs):
+            return {
+                "content": fake_summary,
+                "tool_calls": [],
+                "usage": {},
+                "finish_reason": "stop",
+            }
+
+    agent = TesslateAgent(
+        system_prompt="sys",
+        tools=None,
+        model=None,
+        compaction_adapter=FakeCompactionAdapter(),
+    )
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": "sys"}]
+    for i in range(12):
+        messages.append({"role": "user", "content": f"u{i}"})
+        messages.append({"role": "assistant", "content": f"a{i}"})
+
+    compacted = await agent._compact_messages(messages)
+    tail = messages[-6:]
+    assert compacted[-6:] == tail
 
 @pytest.mark.asyncio
 async def test_pasted_text_attachment_reaches_model() -> None:
