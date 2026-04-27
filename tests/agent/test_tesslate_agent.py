@@ -652,6 +652,7 @@ async def test_compact_messages_preserves_tail_verbatim() -> None:
     tail = messages[-6:]
     assert compacted[-6:] == tail
 
+
 @pytest.mark.asyncio
 async def test_pasted_text_attachment_reaches_model() -> None:
     """Empty typed message + pasted_text attachment must still surface to the LLM."""
@@ -765,3 +766,121 @@ async def test_no_attachments_preserves_string_content() -> None:
 
     user_msg = adapter.calls[0]["messages"][-1]
     assert user_msg == {"role": "user", "content": "hello"}
+
+
+# ---------------------------------------------------------------------------
+# Bug #207: failed tool calls must emit tool_error events
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tool_error_event_emitted_on_tool_failure() -> None:
+    """Bug #207: when a tool raises an exception the agent must yield a
+    'tool_error' event so the frontend can surface it as a non-fatal toast."""
+
+    async def _failing_tool(
+        params: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        raise RuntimeError("disk quota exceeded")
+
+    failing = Tool(
+        name="write_file",
+        description="Write a file (will fail).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["file_path", "content"],
+        },
+        executor=_failing_tool,
+        category=ToolCategory.FILE_OPS,
+    )
+
+    registry = ToolRegistry()
+    registry.register(failing)
+
+    responses = [
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": '{"file_path": "out.txt", "content": "hi"}',
+                    },
+                }
+            ],
+            "usage": {},
+            "finish_reason": "tool_calls",
+        },
+        {
+            "content": "Sorry, the write failed.",
+            "tool_calls": [],
+            "usage": {},
+            "finish_reason": "stop",
+        },
+    ]
+
+    agent = TesslateAgent(
+        system_prompt="test",
+        tools=registry,
+        model=FakeAdapter(responses=responses),
+    )
+
+    events = await _collect_events(agent, "write hello to out.txt")
+
+    tool_error_events = [e for e in events if e.get("type") == "tool_error"]
+    assert len(tool_error_events) == 1, (
+        f"Expected 1 tool_error event, got {len(tool_error_events)}: {tool_error_events}"
+    )
+    err = tool_error_events[0]["data"]
+    assert err["tool_name"] == "write_file"
+    assert "disk quota exceeded" in err["error"]
+    assert err["iteration"] == 1
+
+
+@pytest.mark.asyncio
+async def test_no_tool_error_event_when_tool_succeeds() -> None:
+    """Successful tool calls must NOT emit tool_error events."""
+    registry = ToolRegistry()
+    registry.register(_make_read_file_tool())
+
+    responses = [
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"file_path": "foo.txt"}',
+                    },
+                }
+            ],
+            "usage": {},
+            "finish_reason": "tool_calls",
+        },
+        {
+            "content": "Done.",
+            "tool_calls": [],
+            "usage": {},
+            "finish_reason": "stop",
+        },
+    ]
+
+    agent = TesslateAgent(
+        system_prompt="test",
+        tools=registry,
+        model=FakeAdapter(responses=responses),
+    )
+
+    events = await _collect_events(agent, "read foo.txt")
+    tool_error_events = [e for e in events if e.get("type") == "tool_error"]
+    assert len(tool_error_events) == 0, (
+        f"Expected no tool_error events for a successful tool, got: {tool_error_events}"
+    )

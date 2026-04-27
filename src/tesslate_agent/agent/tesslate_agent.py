@@ -481,6 +481,19 @@ class TesslateAgent(AbstractAgent):
                     },
                 }
 
+                # Surface tool failures as a distinct event so consumers
+                # (worker, frontend) can log/toast them without parsing
+                # nested result dicts.
+                if isinstance(result, dict) and not result.get("success", True):
+                    yield {
+                        "type": "tool_error",
+                        "data": {
+                            "iteration": iteration,
+                            "tool_name": tool_name,
+                            "error": result.get("error", "Tool call failed"),
+                        },
+                    }
+
                 tc_id = tc.get("id", f"call_{idx}") if isinstance(tc, dict) else f"call_{idx}"
                 result_text = format_tool_result(result)
                 messages.append(
