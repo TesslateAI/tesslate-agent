@@ -99,6 +99,16 @@ async def _collect_events(agent: TesslateAgent, request: str) -> list[dict[str, 
     return events
 
 
+async def _collect_events_with_context(
+    agent: TesslateAgent,
+    request: str,
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    async for event in agent.run(request, context=context):
+        events.append(event)
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -641,6 +651,121 @@ async def test_compact_messages_preserves_tail_verbatim() -> None:
     compacted = await agent._compact_messages(messages)
     tail = messages[-6:]
     assert compacted[-6:] == tail
+
+
+@pytest.mark.asyncio
+async def test_pasted_text_attachment_reaches_model() -> None:
+    """Empty typed message + pasted_text attachment must still surface to the LLM."""
+    adapter = FakeAdapter(
+        responses=[
+            {
+                "content": "Saw the paste.",
+                "tool_calls": [],
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        ]
+    )
+    agent = TesslateAgent(system_prompt="sys", tools=ToolRegistry(), model=adapter)
+
+    context = {
+        "attachments": [
+            {
+                "type": "pasted_text",
+                "content": "Build Error: Unexpected token at line 113",
+                "label": "Pasted text (49 lines)",
+            }
+        ]
+    }
+
+    await _collect_events_with_context(agent, "", context)
+
+    user_msg = adapter.calls[0]["messages"][-1]
+    assert user_msg["role"] == "user"
+    assert "Pasted text (49 lines)" in user_msg["content"]
+    assert "Unexpected token at line 113" in user_msg["content"]
+
+
+@pytest.mark.asyncio
+async def test_image_attachment_uses_vision_parts() -> None:
+    """Image attachments become OpenAI vision content-parts alongside text."""
+    adapter = FakeAdapter(
+        responses=[
+            {
+                "content": "ok",
+                "tool_calls": [],
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        ]
+    )
+    agent = TesslateAgent(system_prompt="sys", tools=ToolRegistry(), model=adapter)
+
+    context = {
+        "attachments": [
+            {"type": "image", "content": "AAAA", "mime_type": "image/jpeg"},
+        ]
+    }
+
+    await _collect_events_with_context(agent, "what's this?", context)
+
+    user_msg = adapter.calls[0]["messages"][-1]
+    assert user_msg["role"] == "user"
+    assert isinstance(user_msg["content"], list)
+    parts_by_type = {p.get("type"): p for p in user_msg["content"]}
+    assert parts_by_type["text"]["text"] == "what's this?"
+    assert parts_by_type["image_url"]["image_url"]["url"].startswith(
+        "data:image/jpeg;base64,AAAA"
+    )
+
+
+@pytest.mark.asyncio
+async def test_oversized_pasted_text_is_truncated_not_dropped() -> None:
+    """Pastes exceeding the cap are truncated with a marker, not silently dropped."""
+    cap = TesslateAgent._MAX_PASTED_TEXT_CHARS
+    oversize = "x" * (cap + 500)
+
+    adapter = FakeAdapter(
+        responses=[
+            {"content": "ok", "tool_calls": [], "usage": {}, "finish_reason": "stop"}
+        ]
+    )
+    agent = TesslateAgent(system_prompt="sys", tools=ToolRegistry(), model=adapter)
+
+    context = {
+        "attachments": [
+            {"type": "pasted_text", "content": oversize, "label": "huge paste"}
+        ]
+    }
+
+    await _collect_events_with_context(agent, "", context)
+
+    user_msg = adapter.calls[0]["messages"][-1]
+    content = user_msg["content"]
+    assert "500 more chars" in content
+    # truncated body + marker must be smaller than the raw oversize
+    assert len(content) < len(oversize)
+
+
+@pytest.mark.asyncio
+async def test_no_attachments_preserves_string_content() -> None:
+    """Without attachments the user turn is the bare string — no shape drift."""
+    adapter = FakeAdapter(
+        responses=[
+            {
+                "content": "hi",
+                "tool_calls": [],
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        ]
+    )
+    agent = TesslateAgent(system_prompt="sys", tools=ToolRegistry(), model=adapter)
+
+    await _collect_events(agent, "hello")
+
+    user_msg = adapter.calls[0]["messages"][-1]
+    assert user_msg == {"role": "user", "content": "hello"}
 
 
 # ---------------------------------------------------------------------------

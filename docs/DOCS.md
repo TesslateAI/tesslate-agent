@@ -85,7 +85,7 @@ The **Tesslate Agent** is a self-contained, function-calling coding agent
 that drives an LLM via LiteLLM's unified OpenAI-style tool contract. It is
 distributed as the Python package `tesslate_agent` in the repo
 [github.com/TesslateAI/tesslate-agent](https://github.com/TesslateAI/tesslate-agent)
-and is also vendored in the Tesslate Studio monorepo at
+and is also vendored in the OpenSail monorepo at
 `packages/tesslate-agent/`.
 
 **What it is**
@@ -112,7 +112,7 @@ and is also vendored in the Tesslate Studio monorepo at
 **What it is not**
 
 - Not coupled to a database, Redis, billing, credit system, lock manager,
-  or the Tesslate Studio orchestrator service.
+  or the OpenSail orchestrator service.
 - Not a chat agent — there's no ambient conversation history unless the
   caller injects one through `context["chat_history"]`.
 - Not hard-wired to any single LLM vendor. Any model LiteLLM can reach is
@@ -123,7 +123,7 @@ and is also vendored in the Tesslate Studio monorepo at
 **Where it runs**
 
 - Locally from the CLI: `tesslate-agent run --task "…" --workdir . --output trajectory.json`
-- Embedded in Tesslate Studio's orchestrator worker via the vendored
+- Embedded in OpenSail's orchestrator worker via the vendored
   package.
 - As a benchmark runner (the CLI is tuned for long-horizon autonomous
   runs, not for interactive pair-programming).
@@ -320,7 +320,7 @@ Every tool execution is gated by the `edit_mode` value in the
 | Mode | Dangerous tool behavior | Default where |
 |---|---|---|
 | `auto` | Executed unconditionally. | **Standalone CLI default** (`src/tesslate_agent/cli/runner.py:171`). |
-| `ask` | Dangerous tools must be approved. | `ToolRegistry.execute` default (`edit_mode = context.get("edit_mode", "ask")`). Tesslate Studio hosts use this mode. |
+| `ask` | Dangerous tools must be approved. | `ToolRegistry.execute` default (`edit_mode = context.get("edit_mode", "ask")`). OpenSail hosts use this mode. |
 | `plan` | Dangerous tools blocked with a structured error, unless they are listed in `PLAN_MODE_ALLOWED`. Read-only tools still run. | Explicit opt-in by the caller. |
 
 ### `DANGEROUS_TOOLS`
@@ -436,7 +436,7 @@ returns
 
 `delete_file`, `send_message`, the container tools, and the kanban
 tools are **not** in the 33-tool built-in registry — they ship in the
-Tesslate Studio fork. The entries are kept here so downstream packages
+OpenSail fork. The entries are kept here so downstream packages
 don't need to redeclare scopes.
 
 Read-only tools (`read_file`, `read_many_files`, `glob`, `grep`,
