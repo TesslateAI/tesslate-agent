@@ -44,7 +44,7 @@ class AbstractAgent(ABC):
     def get_processed_system_prompt(self, context: dict[str, Any]) -> str:
         """
         Return the system prompt with ``{marker}`` placeholders resolved
-        from ``context``.
+        from ``context``, with TESSLATE.md appended if available.
 
         Supported markers:
             - ``{mode}``            — edit mode (``"plan"`` / ``"ask"`` / ``"auto"``)
@@ -53,6 +53,11 @@ class AbstractAgent(ABC):
             - ``{timestamp}``       — current ISO timestamp
             - ``{user_name}``       — ``context["user_name"]``
             - ``{tool_list}``       — comma-separated list of tool names
+
+        After placeholder substitution, if ``context["project_context"]["tesslate_context"]``
+        is set, its content (the project's TESSLATE.md) is appended to the system prompt
+        unconditionally so all agents receive project-specific documentation without
+        needing an explicit ``{tesslate_context}`` placeholder in their template.
         """
         project_context = context.get("project_context") or {}
         tool_names = (
@@ -74,6 +79,11 @@ class AbstractAgent(ABC):
             placeholder = "{" + marker + "}"
             if placeholder in result:
                 result = result.replace(placeholder, value)
+
+        tesslate_ctx = project_context.get("tesslate_context")
+        if tesslate_ctx:
+            result = result + "\n\n" + tesslate_ctx
+
         return result
 
     @abstractmethod
