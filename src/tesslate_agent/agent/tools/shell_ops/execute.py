@@ -13,6 +13,7 @@ Retry Strategy:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from tesslate_agent.agent.tools.output_formatter import (
@@ -28,6 +29,20 @@ logger = logging.getLogger(__name__)
 
 _BYTES_PER_TOKEN = 4
 
+# Security Guardrail to prevent destructive shell commands
+DANGEROUS_PATTERNS = [
+    r"rm\s+-rf\s+/",         # Root deletion
+    r"chmod\s+.*777",        # Dangerous permission changes
+    r":\(\){ :\|:& };:",     # Fork bombs
+    r"mv\s+.*\s+/dev/null",  # Deleting data by moving to null
+    r"> /dev/sda",           # Overwriting disk directly
+]
+
+def is_command_safe(command: str) -> tuple[bool, str | None]:
+    for pattern in DANGEROUS_PATTERNS:
+        if re.search(pattern, command):
+            return False, f"Potentially dangerous command pattern detected: {pattern}"
+    return True, None
 
 @tool_retry
 async def shell_exec_executor(
@@ -65,6 +80,15 @@ async def shell_exec_executor(
     # Add newline if not present so the shell actually runs the command.
     if not command.endswith("\n"):
         command += "\n"
+
+    is_safe, error_msg = is_command_safe(command.strip())
+    if not is_safe:
+        logger.warning("[SECURITY-BLOCK] session=%s command=%s", session_id, command.strip())
+        return error_output(
+            message=error_msg,
+            suggestion="Refine the command to target specific directories or avoid destructive flags.",
+            details={"session_id": session_id, "tier": "local", "security_risk": "high"}
+        )
 
     try:
         PTY_SESSIONS.write(session_id, command)

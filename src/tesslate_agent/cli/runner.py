@@ -20,6 +20,7 @@ import logging
 import os
 import sys
 import tempfile
+import signal
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -181,27 +182,67 @@ async def run_agent(
     timeout_seconds = max(1.0, timeout_ms / 1000.0)
     exit_code = EXIT_SUCCESS
 
+    # Fix: Explicit signal handling for graceful shutdown in containers
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def handle_exit_signal():
+        logger.warning("Received exit signal, stopping agent gracefully...")
+        stop_event.set()
+        # Trigger an exception in the running _drive_agent task
+        for task in asyncio.all_tasks(loop):
+            if task.get_coro().__name__ == "_drive_agent":
+                task.cancel()
+    if sys.platform != "win32":
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, handle_exit_signal)
+
     try:
-        await asyncio.wait_for(
-            _drive_agent(agent, task, context, bridge, event_printer),
-            timeout=timeout_seconds,
+        # Combined wait_for and cancellation event
+        agent_task = asyncio.create_task(
+            _drive_agent(agent, task, context, bridge, event_printer)
         )
-        if bridge.has_error:
-            exit_code = EXIT_AGENT_ERROR
-    except asyncio.TimeoutError:
-        logger.error("agent run timed out after %.1fs", timeout_seconds)
-        bridge.mark_errored(f"timeout after {timeout_seconds:.1f}s")
-        exit_code = EXIT_AGENT_ERROR
-    except KeyboardInterrupt:
+        
+        # Wait for either completion, timeout, or signal
+        done, pending = await asyncio.wait(
+            [agent_task], 
+            timeout=timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        if agent_task in done:
+            await agent_task
+        else:
+            # Handle Timeout or Signal
+            agent_task.cancel()
+            if stop_event.is_set():
+                logger.error("agent run interrupted by signal")
+                bridge.mark_errored("interrupted by system signal (SIGINT/SIGTERM)")
+                exit_code = EXIT_AGENT_ERROR
+            else:
+                logger.error("agent run timed out after %.1fs", timeout_seconds)
+                bridge.mark_errored(f"timeout after {timeout_seconds:.1f}s")
+                exit_code = EXIT_AGENT_ERROR
+
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        # Handled by signal logic above
+        pass
+
+    except KeyboardInterrupt: # This handles Ctrl+C on Windows
         logger.error("agent run interrupted by user")
         bridge.mark_errored("interrupted by user")
         exit_code = EXIT_AGENT_ERROR
+
     except Exception as exc:
         logger.exception("agent run failed with unexpected exception")
         bridge.mark_errored(f"unexpected exception: {exc}")
         exit_code = EXIT_AGENT_ERROR
     finally:
-        _write_trajectory(resolved_output, bridge.finalize())
+        # Remove signal handlers to clean up the loop
+        if sys.platform != "win32":
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.remove_signal_handler(sig)
+            _write_trajectory(resolved_output, bridge.finalize())
 
     return exit_code
 
